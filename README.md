@@ -128,7 +128,7 @@ Traditional security linters and naive vulnerability scanners frequently suffer 
 
 ## 3. Subsystem Deep Dives & Low-Level Mechanics
 
-### A. Bitwise File Mode Operations & POSIX ACL Parsing
+### A. Bitwise File Mode Operations, Special Permissions (SUID/SGID/Sticky), & POSIX ACL Parsing
 
 The engine performs bitwise masking on the 16-bit `st_mode` integer returned by `os.lstat()`:
 
@@ -140,16 +140,21 @@ The engine performs bitwise masking on the 16-bit `st_mode` integer returned by 
 └────────────┴──────────┴──────────┴──────────┴──────────┘
 ```
 
+#### Special Mode Bits (Bits 11-09):
+* **`0o4000` (`S_ISUID`, Bit 11 — Set-user-ID):** When executed, the operating system assigns the process the effective user ID (EUID) of the file owner rather than the calling user. If a root-owned SUID binary resides in a user-writable directory, an attacker can replace it or its parent hierarchy, or if it executes untrusted commands, it grants instant root access.
+* **`0o2000` (`S_ISGID`, Bit 10 — Set-group-ID):** On executables, runs with the effective group ID (EGID) of the file. On directories, newly created files inherit the directory's GID rather than the user's primary group, creating shared group write exposure if untrusted users belong to that GID.
+* **`0o1000` (`S_ISVTX`, Bit 09 — Sticky Bit / Restricted Deletion Flag):** On directories like `/tmp` and `/var/tmp`, prevents non-root users from unlinking, deleting, or renaming files unless they own the file.
+
 #### World-Writable Bitmask Evaluation:
 ```python
 is_world_writable = bool(m & 0o002)
 is_sticky_directory = bool(stat.S_ISDIR(m) and (m & 0o1000))
 
 if is_world_writable and not is_sticky_directory:
-    # High Severity Finding: Any local user can overwrite or delete this file!
+    # High Severity Finding: Any local user can overwrite, delete, or rename this file!
 ```
-* `0o002` (`S_IWOTH`): Tests write permission bit for "others".
-* `0o1000` (`S_ISVTX`): Tests the sticky bit. On directories like `/tmp`, the sticky bit prevents unprivileged users from unlinking files owned by other users. If a directory has `0o002` set *without* `0o1000`, any user can rename or replace files within it.
+* **`0o002` (`S_IWOTH`):** Tests the write permission bit for "others" (world-writable).
+* If a directory has `0o002` set *without* `0o1000` (`S_ISVTX`), any local unprivileged user can rename or replace files within it using `rename(2)` or `unlink(2)`, completely bypassing read-only permissions on the file itself!
 
 #### Binary POSIX ACL Byte Unpacking:
 When extended ACLs are configured on Linux ext4/xfs filesystems, `st_mode & 0o070` represents the ACL *mask*, not the group permissions. The engine reads extended attributes directly:
@@ -290,7 +295,8 @@ python3 -B -m unittest -v scripts/test_root_exec_audit.py
 
 ---
 
-## License
+## Ownership & License
 
-Distributed under the **MIT License**. See [LICENSE](LICENSE) for details.  
-Maintained by **Ethan Kilmer** (`ethan@twu.software`).
+* **Author & Lead Architect:** Ethan Kilmer (`ethan@twu.software`)
+* **Organization:** TWU LLC
+* **License:** MIT License (2026). See [LICENSE](LICENSE) for full legal text.

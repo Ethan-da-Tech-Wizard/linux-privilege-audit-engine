@@ -1,3 +1,16 @@
+# ==============================================================================
+# Linux Privilege Escalation Auditor Engine — Build & Packaging Specification
+# ==============================================================================
+# Architecture & Governance:
+#   Package specification for the deterministic zero-dependency root execution
+#   privilege auditor and least-privilege compliance scanner.
+#
+# Ownership & Licensing:
+#   Author: Ethan Kilmer <ethan@twu.software>
+#   Organization: TWU LLC
+#   License: MIT License (2026)
+# ==============================================================================
+
 [build-system]
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
@@ -8,7 +21,8 @@ version = "1.0.0"
 description = "Deterministic zero-dependency Linux & macOS root execution privilege auditor, systemd unit parser, and sudoers compliance scanner."
 readme = "README.md"
 authors = [
-  { name = "Ethan Kilmer", email = "ethan@twu.software" }
+  { name = "Ethan Kilmer", email = "ethan@twu.software" },
+  { name = "TWU LLC" }
 ]
 license = { text = "MIT" }
 keywords = [

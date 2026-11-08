@@ -29,7 +29,8 @@ Zero-Dependency & Fail-Closed Design:
     flagged or downgraded safely without crashing the audit process.
 
 Author: Ethan Kilmer <ethan@twu.software>
-License: MIT
+Organization: TWU LLC
+License: MIT License (2026)
 ========================================================================================
 """
 
@@ -557,7 +558,17 @@ class Auditor:
            Checks whether the file or directory is owned by non-root UID. If UID >= 1000
            (or >= 500 on macOS), it belongs to an unprivileged human user (Critical).
            If UID < 1000, it belongs to an unprivileged system daemon service account (High).
-        3. Bitwise Mode Masking on Regular Files & Directories (stat.S_ISLNK is skipped):
+        3. Special Mode Bits (SUID, SGID, Sticky):
+           - SUID (0o4000 / stat.S_ISUID, Bit 11): Set-user-ID bit. When executed, runs with
+             the privileges of the file owner (root). If an SUID binary or its execution path
+             is writable by non-root, it allows arbitrary code execution under elevated UID.
+           - SGID (0o2000 / stat.S_ISGID, Bit 10): Set-group-ID bit. Sets effective GID or
+             causes directory file creation inheritance. If untrusted groups have write access,
+             escalation is possible via group-writable executables.
+           - Sticky Bit (0o1000 / stat.S_ISVTX, Bit 09): Restricted deletion flag. Crucial
+             on world-writable directories (e.g. /tmp). Without the sticky bit, any user
+             can rename or unlink files owned by root using rename(2) / unlink(2)!
+        4. Bitwise Mode Masking on Regular Files & Directories (stat.S_ISLNK is skipped):
            Symlink mode bits on Linux are always 0777 (lrwxrwxrwx) and ignored by the kernel;
            permissions are enforced on the target file and containing directory.
            - World-Writable Bitwise Test:

@@ -6,6 +6,11 @@
 #   supported Python runtimes (3.10, 3.11, 3.12, 3.13) to ensure zero-dependency
 #   compatibility and regression-free privilege escalation detection.
 #
+# Ownership & Licensing:
+#   Author: Ethan Kilmer <ethan@twu.software>
+#   Organization: TWU LLC
+#   License: MIT License (2026)
+#
 # Core Stages:
 #   1. Static Code Analysis & Syntax Validation (py_compile, AST checks)
 #   2. Multi-Version Python Compatibility Test Matrix (Python 3.10 - 3.13)
