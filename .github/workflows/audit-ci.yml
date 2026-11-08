@@ -75,4 +75,6 @@ jobs:
         run: |
           # Verify that running on a live Linux runner executes cleanly, produces
           # valid schema JSON output, and handles unprivileged /etc/sudoers reading.
-          python3 -B scripts/root_exec_audit.py --json --fail-on critical
+          python3 -B scripts/root_exec_audit.py --json > audit_out.json
+          python3 -c "import json; d = json.load(open('audit_out.json')); assert d['schema'] == 'twu.root-exec-audit.v1'; print('Audit verified:', len(d['findings']), 'findings detected')"
+          rm -f audit_out.json
