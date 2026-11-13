@@ -18,7 +18,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "linux-privilege-audit-engine"
 version = "1.0.0"
-description = "Deterministic zero-dependency Linux & macOS root execution privilege auditor, systemd unit parser, and sudoers compliance scanner."
+description = "Python project for auditing potentially unsafe privileged execution paths."
 readme = "README.md"
 authors = [
   { name = "Ethan Kilmer", email = "ethan@twu.software" },
@@ -37,7 +37,6 @@ keywords = [
   "gtfobins"
 ]
 classifiers = [
-  "Development Status :: 5 - Production/Stable",
   "Intended Audience :: System Administrators",
   "Intended Audience :: Information Technology",
   "License :: OSI Approved :: MIT License",
