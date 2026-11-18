@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# Program: linux-privilege-audit-engine - test_root_exec_audit.py
+# Programmer: Ethan-da-Tech-Wizard (written with Claude, an AI assistant)
+# Last Modified: 2026-11-18
+# Purpose: Unit tests that build fake Linux and macOS root filesystems in temp folders and check that root_exec_audit.py flags unsafe root-run paths and ignores safe ones.
 """scripts/test_root_exec_audit.py — Adversarial Regression Test Suite for Privilege Escalation Auditor.
 
 ========================================================================================
@@ -33,6 +37,8 @@ Ownership & Licensing:
 
 from __future__ import annotations
 
+# Standard library modules: json parses CLI output, plistlib builds macOS plists, subprocess runs the CLI,
+# tempfile makes throwaway folders, unittest is the test framework, mock swaps functions during a test.
 import json
 import os
 import plistlib
@@ -43,7 +49,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+# Let the test import root_exec_audit from the same folder as this file.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+# rea is the auditor module under test.
 import root_exec_audit as rea
 
 # Canonical mock paths for untrusted user homes across Linux and macOS
@@ -64,6 +72,7 @@ LD = "/Library/LaunchDaemons/com.twu.x.plist"
 TWU_MAC = "/Library/Application Support/TWU"
 
 
+# Helper: wrap service-section lines in a full unit file text.
 def unit(body: str) -> str:
     """Generate a standard systemd service unit file wrapping arbitrary [Service] body directives."""
     return "[Unit]\n[Service]\n" + body + "\n[Install]\nWantedBy=multi-user.target\n"
@@ -73,11 +82,14 @@ class Base(unittest.TestCase):
     """Base test fixture providing isolated filesystem sandbox synthesis and verification helpers."""
     platform = "linux"
 
+    # Runs before every test.
     def setUp(self):
         """Initialize an isolated temporary sandbox directory for filesystem simulation."""
+        # Make a temporary folder that is deleted automatically when the test ends.
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.base = Path(tmp.name)
+        # Counter so each tree() call in a test gets its own fake root (t1, t2, ...).
         self.seq = 0
 
     def tree(self, files, trusted_uid=None, trusted_gid=4242, dirs=(), modes=None, links=(), deep=False, fail_on="high", platform=None, bytes_files=None):
@@ -99,40 +111,52 @@ class Base(unittest.TestCase):
           - Directories: 0755 (rwxr-xr-x)
           - Regular files: 0644 (rw-r--r--)
         """
+        # Each call builds a new fake root folder under the sandbox.
         self.seq += 1
         root = self.base / f"t{self.seq}"
+        # Create any requested empty directories.
         for d in dirs:
             (root / d.lstrip("/")).mkdir(parents=True, exist_ok=True)
+        # Write each text file, creating parent folders as needed.
         for p, txt in files.items():
             f = root / p.lstrip("/")
             f.parent.mkdir(parents=True, exist_ok=True)
             f.write_text(txt)
+        # Write each binary file (used for binary plists).
         for p, data in (bytes_files or {}).items():
             f = root / p.lstrip("/")
             f.parent.mkdir(parents=True, exist_ok=True)
             f.write_bytes(data)
+        # Create symlinks: src points at dst.
         for src, dst in links:
             f = root / src.lstrip("/")
             f.parent.mkdir(parents=True, exist_ok=True)
             os.symlink(dst, f)
+        # Make sure the root folder exists even if nothing was written.
         root.mkdir(exist_ok=True)
+        # Give everything default modes: directories 0755, regular files 0644.
         for dp, dns, fns in os.walk(root):
             os.chmod(dp, 0o755)
             for n in fns:
                 if not os.path.islink(os.path.join(dp, n)):
                     os.chmod(os.path.join(dp, n), 0o644)
+        # Apply any special permission modes the test asked for.
         for p, m in (modes or {}).items():
             os.chmod(root / p.lstrip("/"), m)
+        # Remember the root so tests can add to it (for example ACLs).
         self.root = root
+        # Run the audit against the fake root; is_root=False keeps results the same for any runner.
         return rea.run_audit(str(root), os.getuid() if trusted_uid is None else trusted_uid, trusted_gid, platform or self.platform, deep, fail_on, is_root=False)
 
     @staticmethod
     def sev(res, kind=None, sev=None):
         """Filter audit result findings matching specified category kind and severity level."""
+        # Keep findings that match the optional kind and severity filters.
         return [f for f in res["findings"] if (kind is None or f["kind"] == kind) and (sev is None or f["severity"] == sev)]
 
     def assertClean(self, res, msg=""):
         """Assert that an audit result discovered zero blocking findings and zero actionable security risks."""
+        # Anything that is not just an informational note counts as a real problem.
         bad = [f for f in res["findings"] if f["severity"] != "info"]
         self.assertEqual(res["blocking"], 0, f"{msg} {res['findings']}")
         self.assertFalse(bad, f"{msg} {bad}")
@@ -141,6 +165,7 @@ class Base(unittest.TestCase):
 class TestLinuxCore(Base):
     """Core regression test suite for Linux privilege escalation auditing and systemd parsing."""
 
+    # Each test_ method below is one scenario; unittest runs them automatically.
     def test_clean_tree(self):
         """Baseline Hardening Test: Clean Root Service Configuration.
         
@@ -328,6 +353,7 @@ class TestLinuxCore(Base):
         (`ExecStart=""`) and naked prefix characters ('-') safely without hanging,
         infinite recursion, or raising unhandled IndexError exceptions.
         """
+        # Empty or prefix-only commands must give an empty list, not an error.
         self.assertEqual(rea.command_paths([""]), [])
         self.assertEqual(rea.command_paths(["-", "x"]), [])
         res = self.tree({"/etc/systemd/system/x.service": unit('ExecStart=""')}, links=[WANT])
@@ -359,6 +385,7 @@ class TestLinuxCore(Base):
              "/etc/dnf/libdnf5-plugins/actions.d/x.actions": "post_transaction:*:/home/u/s.sh now\n",
              "/etc/cron.d/job": "*/5 * * * * root /home/u/s.sh\n", "/etc/NetworkManager/dispatcher.d/90-x": "#!/bin/sh\n",
              "/etc/kernel/install.d/90-x.install": "#!/bin/sh\n",
+             # The fake tree has one trigger for each kind of root-run source.
              "/etc/sudoers.d/u": "u ALL=(ALL) NOPASSWD: ALL\nv ALL=(root) NOPASSWD: /home/u/s.sh\n", "/usr/local/bin/tool": ""}
         res = self.tree(f, links=[("/usr/local/bin/tool2", f"{HU}/s.sh")])
         kinds = {x["kind"] for x in res["findings"] if x["severity"] in ("critical", "high")}
@@ -398,6 +425,7 @@ class TestLinuxCore(Base):
         the auditor emits an informative 'info' finding advising the operator to run with root credentials.
         """
         f = {"/etc/sudoers": "root ALL=(ALL) ALL\n"}
+        # Pretend no file is readable, as an unprivileged user would see.
         with mock.patch.object(rea.os, "access", return_value=False):
             res = self.tree(f)
         self.assertTrue(any(x["kind"] == "sudoers" and x["severity"] == "info" for x in res["findings"]))
@@ -430,6 +458,7 @@ class TestLinuxCore(Base):
         self.assertTrue([f for f in self.sev(res, "deep-scan", "high") if f["path"] == "/opt/app/run"], res["findings"])
         res = self.tree({"/etc/a": "x"}, trusted_uid=os.getuid() + 1, deep=True)
         self.assertTrue(self.sev(res, "deep-scan"))
+        # Lower the sweep limit to 2 so the cutoff is easy to hit.
         with mock.patch.object(rea, "DEEP_LIMIT", 2):
             res = self.tree({f"/etc/f{i}": "x" for i in range(6)}, trusted_uid=os.getuid() + 1, deep=True)
         self.assertEqual(len(self.sev(res, "deep-scan", "info")), 1)
@@ -445,6 +474,7 @@ class TestLinuxCore(Base):
         self.assertIn("findings", res)
 
     # ---- Regression test cases modeling demonstrated false-negative edge cases
+    # Helper (not a test): build a unit file, with or without an [Install] section.
     @staticmethod
     def u(body, install=True):
         """Construct a systemd unit file with optional [Install] target section."""
@@ -518,7 +548,9 @@ class TestLinuxCore(Base):
         Verifies that the auditor unpacks the binary system.posix_acl_access attribute and
         detects the effective write permission even when st_mode shows standard 0755 permissions.
         """
+        # Imported here because only this test needs it.
         import shutil
+        # Skip the test when the setfacl tool is missing.
         if not shutil.which("setfacl"):
             self.skipTest("setfacl not installed")
         f = {"/etc/systemd/system/x.service": self.u("ExecStart=/usr/local/libexec/twu/run"), "/usr/local/libexec/twu/run": "#!/bin/sh\n"}
@@ -544,6 +576,7 @@ class TestLinuxCore(Base):
         files = {"/etc/sudoers": "@includedir /etc/sudoers.d\nDefaults secure_path=\"/usr/sbin:/usr/bin\"\n",
                  "/etc/sudoers.d/a": "alice ALL=(ALL) NOPASSWD:SETENV: ALL\n%wheelish ALL=(ALL) NOPASSWD: ALL\nbob ALL=(root) NOPASSWD: /usr/bin/vim, /usr/bin/tee\ncarol ALL=(root) NOPASSWD: /usr/local/bin/x *\n",
                  "/usr/local/bin/x": "x"}
+        # Pretend the group has a member so the group rule is reported.
         with mock.patch.object(rea, "_group_has_members", return_value=["dave"]):
             res = self.tree(files)
         why = " | ".join(x["why"] for x in res["findings"] if x["kind"] == "sudoers")
@@ -598,6 +631,7 @@ class TestLinuxCore(Base):
         systemd sleep/suspend hooks.
         """
         f = {f"{HU}/s.sh": "x", "/etc/pam.d/sshd": "auth required pam_exec.so quiet /home/u/s.sh\n", "/etc/modprobe.d/x.conf": "install foo /home/u/s.sh\n",
+             # Typical config text for each kind of root-run hook.
              "/etc/logrotate.d/x": "/var/log/x {\n  postrotate\n    /home/u/s.sh\n  endscript\n}\n", "/etc/tuned/p/tuned.conf": "[script]\nscript=/home/u/s.sh\n",
              "/etc/polkit-1/rules.d/10.rules": f'polkit.spawn(["{HU}/s.sh"]);\n', "/etc/systemd/system-sleep/hook": "#!/bin/sh\n", "/etc/cron.d/job": "@reboot root /home/u/s.sh\n",
              "/var/spool/cron/root": "*/5 * * * * /home/u/s.sh\n", "/var/spool/cron/alice": "*/5 * * * * /home/alice/own.sh\n"}
@@ -701,14 +735,17 @@ class TestMacOS(Base):
     @staticmethod
     def plist(**kw):
         """Generate XML plist byte string for launchd LaunchDaemon specification."""
+        # Build the plist bytes for a LaunchDaemon, letting tests override keys.
         return plistlib.dumps(dict({"Label": "com.twu.x", "ProgramArguments": ["/bin/sh", f"{TWU_MAC}/x.sh"]}, **kw))
 
     def good_tree(self, **plist_kw):
         """Construct a hardened baseline macOS LaunchDaemon test tree."""
+        # Returns the files, bytes files and modes for a safe, root-owned daemon.
         return {"bytes_files": {LD: self.plist(**plist_kw)}, "files": {f"{TWU_MAC}/x.sh": "#!/bin/sh\n"}, "modes": {f"{TWU_MAC}/x.sh": 0o755}}
 
     def run_tree(self, spec, **kw):
         """Execute macOS audit on constructed specification tree."""
+        # Pass the spec's pieces to tree().
         return self.tree(spec["files"], bytes_files=spec["bytes_files"], modes=spec.get("modes"), **kw)
 
     def test_root_owned_path_is_clean(self):
@@ -746,6 +783,7 @@ class TestMacOS(Base):
         and is skipped. When UserName=root, it is audited with full strictness.
         """
         args = ["/bin/sh", f"{UU}/bin/run.sh"]
+        # Non-root account names make launchd drop privileges, so these jobs are skipped.
         for user in ("_nobody", "ethan", "501"):
             with self.subTest(user):
                 res = self.tree({f"{UU}/bin/run.sh": "x"}, bytes_files={LD: self.plist(ProgramArguments=args, UserName=user)})
@@ -873,10 +911,13 @@ class TestCli(Base):
 
     def cli(self, *args, root=None, env_extra=None, platform_arg=("--platform", "linux")):
         """Invoke root_exec_audit CLI in an isolated subprocess with test environment overrides."""
+        # Run the CLI with a minimal environment so the host's settings cannot leak in.
         env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin")}
         if root:
+            # Point the CLI at the fake root through the test-only environment variables.
             env.update(ROOTEXEC_ROOT=str(root), ROOTEXEC_TRUSTED_UID=str(os.getuid()), ROOTEXEC_TRUSTED_GID="4242")
         env.update(env_extra or {})
+        # -B avoids writing bytecode files and -I isolates Python from user settings.
         return subprocess.run([sys.executable, "-B", "-I", SCRIPT, *platform_arg, *args], capture_output=True, text=True, env=env, timeout=60, cwd=str(self.base))
 
     def test_exit_codes_and_json(self):
@@ -887,6 +928,7 @@ class TestCli(Base):
         - Flag --fail-on critical adjusts failure threshold.
         - Flag --json emits valid JSON parseable report.
         """
+        # Build a fake root with one bad unit, then check exit code 1 and JSON output.
         self.tree({"/etc/systemd/system/x.service": SVC.format(cmd="/usr/bin/bash /home/u/s.sh"), f"{HU}/s.sh": "x"}, links=[WANT])
         r = self.cli("--json", root=self.root)
         self.assertEqual(r.returncode, 1, r.stderr)
@@ -911,6 +953,7 @@ class TestCli(Base):
         Validates that running the CLI writes zero files to the working directory.
         """
         self.tree({"/etc/systemd/system/x.service": SVC.format(cmd="/usr/bin/true"), "/usr/bin/true": "x"}, links=[WANT])
+        # Record the folder contents so we can prove nothing new was written.
         before = sorted(p.name for p in self.base.iterdir())
         r = self.cli("--json", env_extra={"HOME": str(self.root), "XDG_CONFIG_HOME": str(self.root), "PYTHONPATH": str(self.root)})
         self.assertIn(r.returncode, (0, 1), r.stderr)
@@ -925,6 +968,7 @@ class TestCli(Base):
         with self.assertRaises(ValueError):
             rea.detect_platform("win32")
         with mock.patch.object(rea.sys, "platform", "freebsd13"):
+            # With an unsupported platform name, main() should return exit code 2.
             self.assertEqual(rea.main(["--json"]), 2)
 
     def test_live_host_smoke_is_valid_json_and_fast(self):
@@ -932,11 +976,13 @@ class TestCli(Base):
         
         Runs against the actual live host and verifies valid JSON output format.
         """
+        # No fake root: audits the machine running the tests.
         r = self.cli("--json", platform_arg=())
         self.assertIn(r.returncode, (0, 1), r.stderr[-300:])
         data = json.loads(r.stdout)
         self.assertIn(data["platform"], ("linux", "darwin"))
 
 
+# Run all tests when this file is executed directly.
 if __name__ == "__main__":
     unittest.main()
