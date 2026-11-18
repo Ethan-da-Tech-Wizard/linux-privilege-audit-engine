@@ -1,4 +1,15 @@
 #!/usr/bin/env python3
+# ==============================================================================
+# Program: root_exec_audit.py
+# Programmer: Ethan-da-Tech-Wizard
+# Course: CIS 156 / Advanced Systems
+# Last Modified: November 18, 2026
+# Purpose: Static security analysis and root execution privilege escalation auditor.
+#          Evaluates Linux systemd unit definitions, sudoers specifications,
+#          world-writable paths, GTFOBins vectors, dynamic linkers, and macOS
+#          launchd daemons to identify insecure path traversal, untrusted scripts,
+#          and unauthorized local privilege escalation (LPE) vulnerabilities.
+# ==============================================================================
 """scripts/root_exec_audit.py — Linux & macOS Root Execution Privilege Escalation Auditor.
 
 ========================================================================================

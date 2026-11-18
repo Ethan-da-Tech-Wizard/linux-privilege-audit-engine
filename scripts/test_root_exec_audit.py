@@ -1,4 +1,15 @@
 #!/usr/bin/env python3
+# ==============================================================================
+# Program: test_root_exec_audit.py
+# Programmer: Ethan-da-Tech-Wizard
+# Course: CIS 156 / Advanced Systems
+# Last Modified: November 18, 2026
+# Purpose: Adversarial regression unit test suite and validation harness for
+#          root execution privilege escalation analysis. Constructs hermetic mock
+#          filesystem trees in temporary directories to test detection of
+#          insecure path traversal, GTFOBins, sudoers misconfigurations,
+#          library injections, and service overrides without requiring root access.
+# ==============================================================================
 """scripts/test_root_exec_audit.py — Adversarial Regression Test Suite for Privilege Escalation Auditor.
 
 ========================================================================================
