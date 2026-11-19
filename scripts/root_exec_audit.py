@@ -61,14 +61,23 @@ import sys
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 # Severity mappings: lower numerical values represent higher severity.
+# Lookup table used both to sort findings (lowest number first) and to compare
+# against the --fail-on threshold in result().
 SEV = {"critical": 0, "high": 1, "medium": 2, "info": 3}
 
 # Environment variable keys used strictly for test harness sandboxing and isolation.
+# Test-only overrides: they let the unit tests point the auditor at a fake
+# root tree and pretend a non-zero UID/GID is 'root'. Production runs leave
+# them unset so the defaults (/, 0, 0) apply.
 ENV_ROOT, ENV_UID, ENV_GID = "ROOTEXEC_ROOT", "ROOTEXEC_TRUSTED_UID", "ROOTEXEC_TRUSTED_GID"
 
 # Directories categorized as untrusted user or temporary storage areas on Linux.
 # Files or ancestor directories within these boundaries are considered untrusted.
+# Trailing-slash forms are used with str.startswith() on '<path>/' so that a
+# prefix like /homework is not mistaken for /home.
 AREAS_LINUX = ("/home/", "/tmp/", "/var/tmp/", "/run/user/", "/dev/shm/")
+# Bare roots (no trailing slash): these top-level dirs themselves are
+# expected to be root-owned/sticky and must not be flagged as 'in a user area'.
 AREA_ROOTS_LINUX = ("/home", "/tmp", "/var/tmp", "/run/user", "/dev/shm")
 
 # Untrusted user or temporary storage boundaries on macOS (Darwin).
@@ -77,6 +86,8 @@ AREA_ROOTS_DARWIN = ("/Users", "/tmp", "/var/tmp", "/private/tmp", "/private/var
 
 # Virtual, pseudo-filesystem, and device paths skipped during traversal.
 # These synthetic filesystems (/proc, /sys, /dev) are managed directly by kernel drivers.
+# Kernel-synthesised trees have meaningless ownership/mode bits, so they are
+# excluded from permission checks to avoid noisy false positives.
 SKIP_PREFIX = ("/proc", "/sys", "/dev", "/run/systemd", "/run/udev")
 
 # Common command shells capable of command execution via -c flags.
@@ -135,18 +146,22 @@ UNIT_PRIO = [
 ]
 
 # Safety bound for deep filesystem traversal to prevent resource exhaustion.
+# Cap on deep_scan() findings; stops runaway output on huge trees.
 DEEP_LIMIT = 2000
 
 # Regular expression matching absolute file paths residing inside untrusted user or temporary areas.
 USER_AREA_SCRIPT = r"(?<![\w.])(/(?:home|Users|tmp|var/tmp|private/tmp|run/user|dev/shm)/[A-Za-z0-9_.+/-]+)"
 
 
+# Platform gate: anything other than Linux/macOS is rejected up front rather
+# than producing misleading results on an unsupported OS.
 def detect_platform(name: Optional[str] = None) -> str:
     """Identify host operating system platform.
     
     Returns 'linux' or 'darwin' based on sys.platform or user override.
     Raises ValueError for unsupported platforms (e.g. Windows or BSD).
     """
+    # An explicit name (from --platform) wins over the detected one.
     name = name or sys.platform
     if name.startswith("linux"):
         return "linux"
@@ -175,6 +190,8 @@ def expand(tok: str, env: Dict[str, str]) -> str:
     If the variable is not defined in the environment dictionary, preserves the token
     intact rather than replacing it with an empty string, avoiding accidental masking.
     """
+    # Unknown variables are left verbatim so later path checks skip them
+    # (check_path ignores any path containing '$').
     return re.sub(r"\$\{?(\w+)\}?", lambda m: env.get(m.group(1), m.group(0)), tok)
 
 
@@ -322,10 +339,14 @@ def dropin_dir_names(name: str) -> List[str]:
        (e.g. system-myservice.service loads system-.service.d).
     4. Type-wide drop-in: Applies to all units of that type (e.g. service.d).
     """
+    # Most specific drop-in directory first; broader template/prefix/type-wide
+    # directories are appended below.
     names = [name + ".d"]
+    # Split 'foo@1.service' into stem 'foo@1' and type 'service'.
     stem, _dot, typ = name.rpartition(".")
     if "@" in stem:
         names.append(stem.split("@")[0] + "@." + typ + ".d")
+    # systemd's dash hierarchy: 'a-b-c.service' also reads 'a-.service.d' and 'a-b-.service.d'.
     parts = stem.split("-")
     for i in range(1, len(parts)):
         names.append("-".join(parts[:i]) + "-." + typ + ".d")
@@ -387,6 +408,8 @@ def _group_has_members(name: str) -> Optional[List[str]]:
         g = grp.getgrnam(name)
     except KeyError:
         return None
+    # gr_mem lists only supplementary members; primary-group members are found
+    # by scanning the passwd database below.
     members = {m for m in g.gr_mem if m != "root"}
     members |= {u.pw_name for u in pwd.getpwall() if u.pw_gid == g.gr_gid and u.pw_name != "root" and u.pw_uid >= 500}
     return sorted(members)
@@ -401,21 +424,30 @@ class Auditor:
     """
 
     def __init__(self, root: str = "/", trusted_uid: int = 0, trusted_gid: int = 0, platform: Optional[str] = None, is_root: Optional[bool] = None):
+        # Normalise the audit root: '' and '/' both mean the real filesystem.
         self.root = (root or "/").rstrip("/") or "/"
+        # The 'trusted' owner IDs: ownership by anyone else on a root-run path is a finding.
         self.tuid, self.tgid = int(trusted_uid), int(trusted_gid)
         self.platform = detect_platform(platform)
         mac = self.platform == "darwin"
         self.areas = AREAS_DARWIN if mac else AREAS_LINUX
         self.area_roots = AREA_ROOTS_DARWIN if mac else AREA_ROOTS_LINUX
+        # First UID assigned to human accounts; lower non-root UIDs are system daemons.
         self.first_user_uid = 500 if mac else 1000
+        # Auto-detect unless overridden (tests pass an explicit value).
         self.is_root = (os.geteuid() == 0) if is_root is None else is_root
+        # Accumulated raw findings; de-duplicated and sorted later in result().
         self.findings: List[Dict[str, str]] = []
+        # Becomes True once any sudoers file could be read; reported in the output so
+        # consumers know whether a clean result is meaningful.
         self.sudoers_readable = False
+        # Memoises risk() per path: many units reference the same binaries/directories.
         self._cache: Dict[str, List[Tuple[str, str]]] = {}
 
     # -------------------------------------------------------------- Path Plumbing
     def P(self, p: str) -> str:
         """Map a system absolute path into the audit root (supports fake test filesystems)."""
+        # Re-root absolute paths under the sandbox; the real root is passed through.
         return os.path.join(self.root, p.lstrip("/")) if self.root != "/" else p
 
     def unP(self, real: str) -> str:
@@ -485,8 +517,10 @@ class Auditor:
         except (OSError, AttributeError):
             return []
         # Unpack 8-byte ACL entries starting after the 4-byte version header
+        # Skip the 4-byte header; step 8 bytes per entry (tag, perm, id).
         ents = [struct.unpack("<HHI", raw[i:i + 8]) for i in range(4, len(raw) - 7, 8)]
         # Locate ACL_MASK entry (tag 0x10) to determine effective permission mask
+        # No ACL_MASK entry means no restriction (rwx = 7).
         mask = next((p for t, p, _ in ents if t == 0x10), 7)
         out = []
         for t, p, idv in ents:
@@ -514,14 +548,18 @@ class Auditor:
           - Bounds symlink recursion at 40 traversals (matching Linux kernel MAXSYMLINKS).
           - Returns tuple of (inspected_nodes, resolved_final_path).
         """
+        # Every path component visited, as (absolute path, lstat result or None if missing).
         nodes: List[Tuple[str, Optional[os.stat_result]]] = []
+        # Physical directory stack: the resolved parent chain so far.
         stack: List[str] = []
         loops = 0
+        # Pending components; symlink targets are spliced onto the front of this queue.
         queue = [c for c in path.split("/") if c]
         while queue:
             comp = queue.pop(0)
             if comp == ".":
                 continue
+            # '..' pops the physical parent (not the lexical one), as the kernel does after symlinks.
             if comp == "..":
                 if stack:
                     stack.pop()
@@ -621,6 +659,7 @@ class Auditor:
             m = st.st_mode
 
             # Step 2: Ownership verification (UID comparison)
+            # Step 2: any owner other than the trusted one can replace this node.
             if st.st_uid != self.tuid:
                 reasons.append(("critical" if st.st_uid >= self.first_user_uid else "high", f"{node} is owned by uid {st.st_uid} (not root)"))
 
@@ -644,6 +683,8 @@ class Auditor:
         # Deduplicate findings while preserving priority order
         out: List[Tuple[str, str]] = []
         keys: set = set()
+        # Keep the first occurrence of each message; reasons were appended in
+        # traversal order so the earliest (outermost) ancestor wins.
         for sev, why in reasons:
             if why not in keys:
                 keys.add(why)
@@ -659,11 +700,15 @@ class Auditor:
             This prevents 'phantom file' attacks where root executes an optional hook that
             an unprivileged user can create on demand.
         """
+        # Ignore relative paths, pseudo-filesystems, and unexpanded systemd specifiers (%x) or shell variables ($x): they cannot be resolved statically.
         if not path or not path.startswith("/") or path.startswith(SKIP_PREFIX) or "%" in path or "$" in path:
             return
+        # Distinguish present paths from missing ones; a missing path under a writable
+        # directory can still be created by an attacker.
         existing = self.exists(path)
         if not existing and not strict_missing:
             return
+        # Emit the most severe reason first.
         for sev, why in sorted(self.risk(path), key=lambda r: SEV[r[0]]):
             self.add(sev, kind, source, path, f"{why_used}: {why}" + ("" if existing else " (does not exist yet: a user could create it)"))
 
@@ -671,6 +716,7 @@ class Auditor:
         """Audit existing filesystem files and their parent directories across glob patterns."""
         for pat in patterns:
             for f in self.glob(pat):
+                # Real directories are covered by their own check_path call elsewhere; only files and symlinks are audited here.
                 if os.path.isdir(self.P(f)) and not os.path.islink(self.P(f)):
                     continue
                 self.check_path(kind, f"{label} {os.path.basename(f)}", f, why, strict_missing=False)
@@ -683,6 +729,7 @@ class Auditor:
     def check_env(self, kind: str, src: str, env: Dict[str, str], who: str) -> None:
         """Audit environment variable definitions for path injection or relative directory risks."""
         for k, v in env.items():
+            # Colon/space separated search lists: audit each entry.
             if k in ENV_PATHLISTS:
                 for pth in re.split(r"[:\s]+", v):
                     if not pth:
@@ -692,8 +739,10 @@ class Auditor:
                             self.add("high", kind, src, pth, f"{k} has a relative entry: it resolves against the working directory")
                         continue
                     self.check_path(kind, src, pth, f"{k} entry for a root {who}")
+            # Single-file variables that get sourced or executed.
             elif k in ENV_FILES:
                 self.check_path(kind, src, v, f"{k} is sourced/run by a root {who}")
+            # Free-form option strings: pull out anything that looks like an absolute path.
             elif k in ENV_SCAN:
                 for pth in re.findall(r"(/[A-Za-z0-9_.+/-]+)", v):
                     self.check_path(kind, src, pth, f"{k} loads it in a root {who}", strict_missing=False)
@@ -705,6 +754,7 @@ class Auditor:
         Merges base unit files and all corresponding drop-in configuration snippets (.conf).
         Resolves unit naming collisions using systemd precedence hierarchy (UNIT_PRIO).
         """
+        # unit name -> [(priority, path)] for every copy found in any search directory.
         names: Dict[str, List[Tuple[int, str]]] = {}
         for base, pr in UNIT_PRIO:
             for typ in ("service", "socket"):
@@ -712,7 +762,10 @@ class Auditor:
                     names.setdefault(os.path.basename(f), []).append((pr, f))
         out: Dict[str, Tuple[str, List[str]]] = {}
         for name, files in sorted(names.items()):
+            # Highest priority number wins, mirroring systemd's override order.
             main = max(files)[1]  # Select unit file from highest-priority directory
+            # Drop-ins are keyed by file name: a same-named file in a higher-priority
+            # directory replaces the lower one.
             drops: Dict[str, str] = {}
             for dn in dropin_dir_names(name):
                 for base, _pr in sorted(UNIT_PRIO, key=lambda x: x[1]):
@@ -739,11 +792,14 @@ class Auditor:
         5. WorkingDirectory configuration (relative path hijacking).
         6. Environment variables (PATH, PYTHONPATH, LD_PRELOAD).
         """
+        # Names that are symlinked into *.wants/*.requires, i.e. explicitly enabled.
         wants = set()
         for lnk in self.glob("/etc/systemd/system/*.wants/*") + self.glob("/etc/systemd/system/*.requires/*"):
             wants.add(os.path.basename(lnk))
             self.check_path("systemd-unit", f"enablement link {os.path.basename(lnk)}", lnk, "an enablement link in /etc/systemd/system", strict_missing=False)
         for name, (main, drops) in self.units().items():
+            # A unit lacking [Install] cannot be 'enabled' and is only pulled in by
+            # dependencies/sockets, so it is treated as live.
             has_install = "[Install]" in self.read(main)
             # Units with no [Install] section are static and activated by sockets or dependencies
             enabled = name in wants or name.replace(".socket", ".service") in wants or not has_install
@@ -754,7 +810,9 @@ class Auditor:
                 self.check_path("systemd-unit-file", src, f, "systemd reads this unit file/drop-in as root", strict_missing=False)
             d = parse_unit([self.read(f) for f in [main] + drops])
             user = (d.get("User") or [""])[-1]
+            # True when User= drops privileges; such commands only matter if prefixed '+' or '!'.
             unpriv = bool(user) and user not in ("root", "0") and not user.startswith("%")
+            # Environment= assignments, parsed shell-style to honour quoting.
             env: Dict[str, str] = {}
             for e in d.get("Environment", []):
                 for kv in split_command(e):
@@ -777,6 +835,7 @@ class Auditor:
                     for argv in cmds:
                         if not argv:
                             continue
+                        # Collect the leading modifier characters (-@+!:) of this command.
                         prefixes = set(re.match(r"^[-@+!:]*", argv[0]).group(0))  # type: ignore[union-attr]
                         # If User= is non-root, commands run unprivileged UNLESS prefixed with '+' or '!'
                         if unpriv and not ({"+", "!"} & prefixes):
@@ -802,6 +861,7 @@ class Auditor:
 
     def audit_generators(self) -> None:
         """Audit systemd generator binaries, power management sleep hooks, and shutdown hooks."""
+        # Executables dropped in these directories are run by systemd/PID 1 as root.
         for d in ("/etc/systemd/system-generators", "/usr/local/lib/systemd/system-generators", "/run/systemd/system-generators", "/usr/lib/systemd/system-generators",
                   "/etc/systemd/system-sleep", "/usr/lib/systemd/system-sleep", "/usr/local/lib/systemd/system-sleep", "/etc/systemd/system-shutdown",
                   "/usr/lib/systemd/system-shutdown", "/usr/local/lib/systemd/system-shutdown"):
@@ -811,10 +871,12 @@ class Auditor:
     # -------------------------------------------------------------- Linux Privilege Sources
     def audit_udev(self) -> None:
         """Audit udev hardware event rules for root RUN/PROGRAM executable triggers."""
+        # Standard udev rule search directories, vendor to runtime.
         for d in ("/etc/udev/rules.d", "/usr/lib/udev/rules.d", "/usr/local/lib/udev/rules.d", "/run/udev/rules.d"):
             for f in self.glob(d + "/*.rules"):
                 src = f"udev {os.path.basename(f)}"
                 self.check_path("udev-rule", src, f, "udev rules files are read by root", strict_missing=False)
+                # Rule keys that spawn programs: RUN, RUN{program}, PROGRAM and IMPORT{program}.
                 for m in re.finditer(r'(?:RUN(?:\{program\})?\s*\+?=|PROGRAM\s*=|IMPORT\{program\}\s*=)\s*"([^"]+)"', self.read(f)):
                     self.check_command("udev-rule", src, split_command(m.group(1)), "RUN/PROGRAM executes it as root on device events")
 
@@ -829,6 +891,7 @@ class Auditor:
                     ln = ln.strip()
                     if not ln or ln.startswith("#"):
                         continue
+                    # dnf actions format 'mask:direction:flags:command'; the command is the last field.
                     cmd = ln.split(":", 3)[-1]
                     found = command_paths(split_command(cmd)) or [(p, False) for p in re.findall(r"(/[A-Za-z0-9_.+/-]+)", cmd)]
                     for pth, strict in found:
@@ -846,11 +909,13 @@ class Auditor:
             patterns = ["/etc/crontab", "/etc/cron.d/*", "/etc/cron.hourly/*", "/etc/cron.daily/*", "/etc/cron.weekly/*", "/etc/cron.monthly/*", "/etc/anacrontab"] + spools
         self.check_files("cron", "cron", patterns, "executed by cron as root")
         for f in system + spools:
+            # Per-user spool crontabs have no user column; system crontabs do.
             is_spool = f in spools
             for ln in self.read(f).splitlines():
                 s = ln.strip()
                 if not s or s.startswith("#") or "=" in s.split()[0]:
                     continue
+                # System crontab: 5 time fields, user, command (7 tokens max).
                 w = s.split(None, 6)
                 if w[0].startswith("@"):
                     cmd = " ".join(w[2:]) if not is_spool and len(w) > 2 and w[1] == "root" else " ".join(w[1:])
@@ -865,6 +930,7 @@ class Auditor:
                     cmd, user_ok = w[6], w[5] == "root"
                 if user_ok:
                     self.check_command("cron", f"cron {os.path.basename(f)}", split_command(cmd), "cron job runs it as root")
+        # anacrontab lines: period delay job-id command.
         for ln in self.read("/etc/anacrontab").splitlines():
             w = ln.split(None, 3)
             if len(w) == 4 and not ln.lstrip().startswith("#") and "=" not in w[0]:
@@ -916,7 +982,9 @@ class Auditor:
             return
 
         # Step 2: Initialize include resolution queue
+        # Worklist for sudoers files; #include/@include entries append to it.
         queue = list(files)
+        # Guards against include cycles between sudoers files.
         seen: set = set()
         while queue:
             f = queue.pop(0)
@@ -948,6 +1016,7 @@ class Auditor:
                     continue
 
                 # Step 4: Parse privilege specifications (User Host = (RunAs) NOPASSWD: Commands)
+                # First token is the user, %group, or alias the rule applies to.
                 who = s.split()[0]
                 rhs = s.split("=", 1)[-1]
 
@@ -976,6 +1045,7 @@ class Auditor:
     def audit_local_bins(self) -> None:
         """Audit /usr/local binary and library directories placed on root PATH."""
         patterns = ["/usr/local/bin/*", "/usr/local/sbin/*", "/usr/local/libexec/*/*", "/usr/local/libexec/*"]
+        # Directories that hold root-run programs and must not be writable by others.
         dirs = ["/usr/local", "/usr/local/bin", "/usr/local/sbin", "/usr/local/libexec", "/usr/local/libexec/twu"]
         if self.platform == "darwin":
             patterns += ["/Library/Application Support/TWU/*", "/Library/Application Support/TWU/*/*", "/Library/PrivilegedHelperTools/*"]
@@ -985,6 +1055,7 @@ class Auditor:
             if self.exists(d):
                 self.check_path("local-bin", d, d, "directory that holds root-run programs")
 
+    # Privilege-elevation front ends whose argument is run as root.
     ELEVATORS = ("pkexec", "sudo", "doas")
 
     def audit_user_launchers(self) -> None:
@@ -993,19 +1064,23 @@ class Auditor:
         Detects launchers in ~/.local/bin, ~/bin, ~/.local/share/applications, or ~/.config/autostart
         that elevate privileges via pkexec, sudo, or doas and execute a user-writable script.
         """
+        # Where per-user launchers live (macOS vs Linux, plus root's home).
         homes = [os.path.join("/Users", "*")] if self.platform == "darwin" else [os.path.join("/home", "*"), "/root"]
         pats = []
         for h in homes:
             pats += [f"{h}/.local/bin/*", f"{h}/bin/*", f"{h}/.local/share/applications/*.desktop", f"{h}/.config/autostart/*.desktop"]
+        # glob_any de-duplicates files matched by several patterns.
         for f in self.glob_any(pats):
             if os.path.isdir(self.P(f)):
                 continue
             try:
+                # Large files are almost certainly compiled binaries, not launcher scripts.
                 if os.path.getsize(self.P(f)) > 65536:  # Skip large compiled binaries
                     continue
                 text = self.read(f)
             except Exception:
                 continue
+            # NUL byte means binary content; skip.
             if "\0" in text:
                 continue
             for line in text.splitlines():
@@ -1021,6 +1096,7 @@ class Auditor:
                 for i, tok in enumerate(toks):
                     if os.path.basename(tok) not in self.ELEVATORS:
                         continue
+                    # Strip elevator flags (e.g. pkexec --user x) to reach the command it runs.
                     rest = [t for t in toks[i + 1:]]
                     while rest and rest[0].startswith("-"):
                         rest = rest[1:]
@@ -1053,29 +1129,35 @@ class Auditor:
                                                          "/usr/lib/kernel/install.d/*", "/etc/kernel/install.conf"], "run as root when kernels are installed")
         self.check_files("polkit", "polkit", ["/etc/polkit-1/rules.d/*", "/usr/share/polkit-1/rules.d/*"], "polkit rules are evaluated by a root daemon")
         for f in self.glob("/etc/polkit-1/rules.d/*.rules") + self.glob("/usr/share/polkit-1/rules.d/*.rules"):
+            # polkit JS rules can spawn arbitrary programs as root.
             for m in re.finditer(r'polkit\.spawn\(\s*\[\s*"([^"]+)"', self.read(f)):
                 self.check_path("polkit", f"polkit {os.path.basename(f)}", m.group(1), "polkit.spawn runs it as root")
         for f in self.glob("/usr/share/polkit-1/actions/*.policy"):
+            # Policy files name the binary pkexec will run via the exec.path annotation.
             for m in re.finditer(r'exec\.path">([^<]+)<', self.read(f)):
                 self.check_path("polkit", f"polkit {os.path.basename(f)}", m.group(1).strip(), "pkexec runs it as root")
         self.check_files("pam", "pam", ["/etc/pam.d/*", "/etc/security/*.conf"], "authentication configuration read by root")
         for f in self.glob("/etc/pam.d/*"):
             for ln in self.read(f).splitlines():
+                # pam_exec runs an arbitrary program as root during authentication.
                 if "pam_exec.so" in ln and not ln.lstrip().startswith("#"):
                     for pth in [t for t in ln.split() if t.startswith("/")]:
                         self.check_path("pam", f"pam {os.path.basename(f)}", pth, "pam_exec runs it as root")
         for f in self.glob("/etc/modprobe.d/*.conf") + self.glob("/usr/lib/modprobe.d/*.conf") + self.glob("/usr/local/lib/modprobe.d/*.conf"):
             for ln in self.read(f).splitlines():
+                # modprobe 'install'/'remove' directives run a shell command at module load/unload.
                 m = re.match(r"^\s*(install|remove)\s+\S+\s+(.+)$", ln)
                 if m:
                     self.check_command("modprobe", f"modprobe {os.path.basename(f)}", split_command(m.group(2)), f"modprobe '{m.group(1)}' command runs as root")
         for f in self.glob("/etc/logrotate.d/*") + ["/etc/logrotate.conf"]:
+            # Script bodies between the logrotate hook keyword and 'endscript'.
             for blk in re.findall(r"(?:prerotate|postrotate|firstaction|lastaction|preremove)\n(.*?)\n\s*endscript", self.read(f), re.S):
                 for pth in re.findall(r"(/[A-Za-z0-9_.+/-]+)", blk):
                     self.check_path("logrotate", f"logrotate {os.path.basename(f)}", pth, "logrotate runs this script as root", strict_missing=False)
         self.check_files("tuned", "tuned", ["/etc/tuned/*/*.sh", "/etc/tuned/*.sh", "/usr/lib/tuned/*/*.sh"], "tuned profile scripts run as root")
         for f in self.glob("/etc/tuned/*/tuned.conf") + self.glob("/usr/lib/tuned/*/tuned.conf"):
             for m in re.finditer(r"^\s*script\s*=\s*(\S+)", self.read(f), re.M):
+                # Expand tuned's profile-directory placeholder before auditing.
                 pth = m.group(1).replace("${i:PROFILE_DIR}", os.path.dirname(f))
                 self.check_path("tuned", f"tuned {os.path.basename(os.path.dirname(f))}", pth, "tuned runs this script as root")
 
@@ -1087,12 +1169,14 @@ class Auditor:
             try:
                 with open(self.P(f), "rb") as fh:
                     job = plistlib.load(fh)
+            # A parse failure is reported as info instead of aborting the whole run.
             except Exception as exc:  # Hostile or garbled plist must not crash the audit
                 self.add("info", "launchd-daemon", src, f, f"plist could not be parsed ({type(exc).__name__}); launchd would not load it, but check it by hand")
                 continue
             if not isinstance(job, dict):
                 self.add("info", "launchd-daemon", src, f, "plist is not a dictionary; launchd would not load it")
                 continue
+            # launchd runs jobs as root unless UserName says otherwise.
             user = str(job.get("UserName", "") or "")
             if user and user not in ("root", "0"):
                 continue  # Job drops privileges to non-root account
@@ -1133,10 +1217,12 @@ class Auditor:
         tops = ["/etc", "/usr/local", "/opt"]
         if self.platform == "darwin":
             tops = ["/etc", "/usr/local", "/Library/LaunchDaemons", "/Library/PrivilegedHelperTools", "/Library/Application Support/TWU"]
+        # Total findings so far, compared against DEEP_LIMIT.
         count = 0
         for top in tops:
             if not self.exists(top):
                 continue
+            # followlinks=False: never traverse symlinks out of the intended tree.
             for dp, dns, fns in os.walk(self.P(top), followlinks=False):
                 for n in dns + fns:
                     full = os.path.join(dp, n)
@@ -1146,6 +1232,7 @@ class Auditor:
                         continue
                     if stat.S_ISLNK(st.st_mode):
                         continue
+                    # Reason tuple (severity, text) when this entry is suspicious.
                     why = None
                     if st.st_uid != self.tuid:
                         why = ("high" if st.st_uid < self.first_user_uid else "critical", f"owned by uid {st.st_uid} (not root)")
@@ -1161,6 +1248,8 @@ class Auditor:
     # -------------------------------------------------------------- Audit Driver
     def run(self, deep: bool = False) -> None:
         """Execute full platform privilege audit suite."""
+        # Linux and macOS expose different privileged-execution surfaces, so each
+        # platform runs its own check list; sudoers/cron/local-bin are shared.
         if self.platform == "linux":
             self.audit_units()
             self.audit_generators()
@@ -1187,13 +1276,16 @@ class Auditor:
         seen: set = set()
         out: List[Dict[str, str]] = []
         for f in self.findings:
+            # Identity of a finding for de-duplication.
             key = (f["severity"], f["kind"], f["source"], f["path"], f["why"])
             if key not in seen:
                 seen.add(key)
                 out.append(f)
         out.sort(key=lambda f: (SEV[f["severity"]], f["kind"], f["path"]))
+        # Findings at or above the --fail-on severity make the exit code non-zero.
         blocking = [f for f in out if SEV[f["severity"]] <= SEV[fail_on]]
         return {
+            # Versioned schema tag so downstream consumers can detect format changes.
             "schema": "twu.root-exec-audit.v1",
             "platform": self.platform,
             "fail_on": fail_on,
@@ -1208,6 +1300,7 @@ class Auditor:
 def run_audit(root: str = "/", trusted_uid: int = 0, trusted_gid: int = 0, platform: Optional[str] = None,
               deep: bool = False, fail_on: str = "high", is_root: Optional[bool] = None) -> Dict[str, Any]:
     """Execute privilege audit on specified root directory and return structured result dictionary."""
+    # Build, run, and summarise in one call; used by both the CLI and the tests.
     auditor = Auditor(root, trusted_uid, trusted_gid, platform, is_root)
     auditor.run(deep)
     return auditor.result(fail_on)
@@ -1223,6 +1316,7 @@ def _overrides(environ: Dict[str, str]) -> Tuple[str, int, int]:
 
 def render(res: Dict[str, Any]) -> str:
     """Format audit results as human-readable terminal output."""
+    # One two-line block per finding: header, then the explanation.
     lines = [f"[{f['severity'].upper():8}] {f['kind']:16} {f['source']}: {f['path']}\n             {f['why']}" for f in res["findings"]]
     tail = "" if res["checked_as_root"] else "  [not run as root: sudoers not fully checked]"
     lines.append(f"\nroot_exec_audit ({res['platform']}): {res['blocking']} blocking finding(s) ({res['fail_on']} or worse), {res['total']} total" + tail)
@@ -1231,6 +1325,7 @@ def render(res: Dict[str, Any]) -> str:
 
 def main(argv: Optional[List[str]] = None) -> int:
     """Command-line interface entry point."""
+    # CLI definition. Exit codes: 0 clean, 1 blocking findings, 2 bad configuration.
     ap = argparse.ArgumentParser(description="Find anything root runs or sources that a non-root user could modify (read-only).")
     ap.add_argument("--json", action="store_true", help="print the result as JSON")
     ap.add_argument("--fail-on", default="high", choices=("critical", "high", "medium"), help="lowest severity that makes the exit code 1 (default high)")
@@ -1244,6 +1339,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"root_exec_audit: {exc}", file=sys.stderr)
         return 2
     print(json.dumps(res, indent=1) if a.json else render(res))
+    # Non-zero exit makes this usable as a CI gate.
     return 1 if res["blocking"] else 0
 
 
