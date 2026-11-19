@@ -1,8 +1,10 @@
+# Python bytecode and caches
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
+# Packaging and build output
 build/
 develop-eggs/
 dist/
@@ -18,9 +20,11 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+# Test and coverage artefacts
 .pytest_cache/
 .coverage
 htmlcov/
+# Local environments and secrets (never commit)
 .env
 .venv
 env/

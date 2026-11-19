@@ -11,6 +11,7 @@
 #   License: MIT License (2026)
 # ==============================================================================
 
+# Build backend: plain setuptools; the project has no runtime dependencies.
 [build-system]
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
@@ -50,11 +51,14 @@ classifiers = [
   "Topic :: Security",
   "Topic :: System :: Systems Administration"
 ]
+# Matches the CI matrix (3.10 through 3.13).
 requires-python = ">=3.10"
 
+# Installs a 'privilege-audit' command that calls scripts.root_exec_audit.main().
 [project.scripts]
 privilege-audit = "scripts.root_exec_audit:main"
 
+# Package only the scripts/ directory; the tests live there too but nothing else is shipped.
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["scripts*"]

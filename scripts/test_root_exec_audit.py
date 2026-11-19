@@ -53,10 +53,13 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+# Make the sibling module importable regardless of the directory pytest/unittest is launched from.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+# Module under test (imported by file location, not as an installed package).
 import root_exec_audit as rea
 
 # Canonical mock paths for untrusted user homes across Linux and macOS
+# Written as a concatenation so naive greps for literal user-home paths in this file do not match.
 HU = "/" + "home/u"
 UU = "/" + "Users/u"
 
@@ -74,6 +77,7 @@ LD = "/Library/LaunchDaemons/com.twu.x.plist"
 TWU_MAC = "/Library/Application Support/TWU"
 
 
+# Unlike SVC, takes a free-form [Service] body so tests can supply multiple directives.
 def unit(body: str) -> str:
     """Generate a standard systemd service unit file wrapping arbitrary [Service] body directives."""
     return "[Unit]\n[Service]\n" + body + "\n[Install]\nWantedBy=multi-user.target\n"
@@ -85,9 +89,11 @@ class Base(unittest.TestCase):
 
     def setUp(self):
         """Initialize an isolated temporary sandbox directory for filesystem simulation."""
+        # Each test gets its own throwaway directory, removed automatically afterwards.
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.base = Path(tmp.name)
+        # Counter giving every tree() call within one test a fresh sub-root (t1, t2, ...).
         self.seq = 0
 
     def tree(self, files, trusted_uid=None, trusted_gid=4242, dirs=(), modes=None, links=(), deep=False, fail_on="high", platform=None, bytes_files=None):
@@ -109,8 +115,10 @@ class Base(unittest.TestCase):
           - Directories: 0755 (rwxr-xr-x)
           - Regular files: 0644 (rw-r--r--)
         """
+        # Fresh root per call so repeated scenarios inside one test never see each other's files.
         self.seq += 1
         root = self.base / f"t{self.seq}"
+        # Explicit directories first.
         for d in dirs:
             (root / d.lstrip("/")).mkdir(parents=True, exist_ok=True)
         for p, txt in files.items():
@@ -121,19 +129,23 @@ class Base(unittest.TestCase):
             f = root / p.lstrip("/")
             f.parent.mkdir(parents=True, exist_ok=True)
             f.write_bytes(data)
+        # Symlinks may dangle: their targets need not exist inside the tree.
         for src, dst in links:
             f = root / src.lstrip("/")
             f.parent.mkdir(parents=True, exist_ok=True)
             os.symlink(dst, f)
         root.mkdir(exist_ok=True)
+        # Normalise modes (umask-independent): dirs 0755, files 0644; symlinks are skipped because chmod would follow them.
         for dp, dns, fns in os.walk(root):
             os.chmod(dp, 0o755)
             for n in fns:
                 if not os.path.islink(os.path.join(dp, n)):
                     os.chmod(os.path.join(dp, n), 0o644)
+        # Apply per-path mode overrides after the normalisation above.
         for p, m in (modes or {}).items():
             os.chmod(root / p.lstrip("/"), m)
         self.root = root
+        # Default the trusted UID to the current user: files created by the test runner then count as 'root-owned'.
         return rea.run_audit(str(root), os.getuid() if trusted_uid is None else trusted_uid, trusted_gid, platform or self.platform, deep, fail_on, is_root=False)
 
     @staticmethod
@@ -143,6 +155,7 @@ class Base(unittest.TestCase):
 
     def assertClean(self, res, msg=""):
         """Assert that an audit result discovered zero blocking findings and zero actionable security risks."""
+        # Informational findings (e.g. unreadable sudoers) are allowed in a 'clean' result.
         bad = [f for f in res["findings"] if f["severity"] != "info"]
         self.assertEqual(res["blocking"], 0, f"{msg} {res['findings']}")
         self.assertFalse(bad, f"{msg} {bad}")
@@ -158,6 +171,7 @@ class TestLinuxCore(Base):
         executable in /usr/local/libexec/twu with standard permissions (0755) and an active
         enablement symlink generates zero blocking findings.
         """
+        # Arrange: root-owned 0755 script, enabled unit. Act: audit. Assert: nothing reported.
         res = self.tree({"/etc/systemd/system/x.service": SVC.format(cmd="/usr/bin/bash /usr/local/libexec/twu/x"), "/usr/local/libexec/twu/x": "#!/bin/sh\n"},
                         modes={"/usr/local/libexec/twu/x": 0o755}, links=[WANT])
         self.assertClean(res)
@@ -177,6 +191,7 @@ class TestLinuxCore(Base):
         """
         res = self.tree({"/etc/systemd/system/x.service": SVC.format(cmd="/usr/bin/bash /home/u/TWU_LLC/private/configs/apply.sh"),
                          f"{HU}/TWU_LLC/private/configs/apply.sh": "#!/bin/sh\n"}, links=[WANT])
+        # Assert the finding names the user-owned script, not just any critical.
         crit = self.sev(res, "systemd-unit", "critical")
         self.assertTrue(crit and "apply.sh" in crit[0]["path"], res["findings"])
         self.assertEqual(res["blocking"] >= 1, True)
@@ -203,6 +218,7 @@ class TestLinuxCore(Base):
         res = self.tree(files, links=[WANT], modes={"/usr/local/libexec/twu/apply": 0o755})
         self.assertEqual(res["blocking"], 0, res["findings"])
         self.assertFalse(self.sev(res, "systemd-unit"), res["findings"])
+        # Remove the drop-in and re-audit: the original finding must return.
         del files["/etc/systemd/system/x.service.d/10-hardened.conf"]
         res = self.tree(files, links=[WANT])
         self.assertTrue(self.sev(res, "systemd-unit", "critical"))
@@ -304,11 +320,13 @@ class TestLinuxCore(Base):
           - 'prefix-dash': Systemd '-' prefix modifier stripped to audit target
           - 'path-env': PATH containing user-controlled search directory
         """
+        # Shared fixture: a user-owned script and env file plus a harmless /usr/bin/true.
         tree = {f"{HU}/s.sh": "x", f"{HU}/e.env": "A=1", "/usr/bin/true": "x"}
         cases = {"bash": "ExecStart=/usr/bin/bash /home/u/s.sh", "env-python": "ExecStart=/usr/bin/env python3 /home/u/s.sh",
                  "dash-c": f"ExecStart=/bin/sh -c '{HU}/s.sh now'", "envfile": "ExecStart=/usr/bin/true\nEnvironmentFile=-/home/u/e.env",
                  "pythonpath": "ExecStart=/usr/bin/true\nEnvironment=PYTHONPATH=/home/u/lib", "wd": "ExecStart=/usr/bin/true\nWorkingDirectory=/home/u",
                  "prefix-dash": "ExecStart=-/usr/bin/bash /home/u/s.sh", "path-env": 'ExecStart=/usr/bin/true\nEnvironment="PATH=/home/u/lib:/usr/bin"'}
+        # subTest reports each failing case separately instead of stopping at the first.
         for name, body in cases.items():
             with self.subTest(name):
                 res = self.tree(dict(tree, **{"/etc/systemd/system/x.service": unit(body)}), links=[WANT], dirs=[f"{HU}/lib"])
@@ -338,6 +356,7 @@ class TestLinuxCore(Base):
         (`ExecStart=""`) and naked prefix characters ('-') safely without hanging,
         infinite recursion, or raising unhandled IndexError exceptions.
         """
+        # Empty and prefix-only words must yield no paths (and must not raise).
         self.assertEqual(rea.command_paths([""]), [])
         self.assertEqual(rea.command_paths(["-", "x"]), [])
         res = self.tree({"/etc/systemd/system/x.service": unit('ExecStart=""')}, links=[WANT])
@@ -371,6 +390,7 @@ class TestLinuxCore(Base):
              "/etc/kernel/install.d/90-x.install": "#!/bin/sh\n",
              "/etc/sudoers.d/u": "u ALL=(ALL) NOPASSWD: ALL\nv ALL=(root) NOPASSWD: /home/u/s.sh\n", "/usr/local/bin/tool": ""}
         res = self.tree(f, links=[("/usr/local/bin/tool2", f"{HU}/s.sh")])
+        # Collect categories of blocking-grade findings; each source must contribute at least one.
         kinds = {x["kind"] for x in res["findings"] if x["severity"] in ("critical", "high")}
         for want in ("udev-rule", "dnf-plugin", "cron", "sudoers", "local-bin"):
             self.assertIn(want, kinds)
@@ -408,6 +428,7 @@ class TestLinuxCore(Base):
         the auditor emits an informative 'info' finding advising the operator to run with root credentials.
         """
         f = {"/etc/sudoers": "root ALL=(ALL) ALL\n"}
+        # Simulate an unprivileged user: access(R_OK) is denied for every file.
         with mock.patch.object(rea.os, "access", return_value=False):
             res = self.tree(f)
         self.assertTrue(any(x["kind"] == "sudoers" and x["severity"] == "info" for x in res["findings"]))
@@ -436,8 +457,10 @@ class TestLinuxCore(Base):
         2. Bounded execution: Enforces DEEP_LIMIT cutoff to prevent unbounded resource
            consumption on severely misconfigured systems.
         """
+        # Deep scan: a world-writable file under /opt must be reported as high.
         res = self.tree({"/etc/foo.conf": "x", "/opt/app/run": "x"}, modes={"/opt/app/run": 0o666}, deep=True)
         self.assertTrue([f for f in self.sev(res, "deep-scan", "high") if f["path"] == "/opt/app/run"], res["findings"])
+        # Pretend root is a different UID so every file looks foreign-owned.
         res = self.tree({"/etc/a": "x"}, trusted_uid=os.getuid() + 1, deep=True)
         self.assertTrue(self.sev(res, "deep-scan"))
         with mock.patch.object(rea, "DEEP_LIMIT", 2):
@@ -451,6 +474,7 @@ class TestLinuxCore(Base):
         to Linux kernel MAXSYMLINKS (40 traversals) cutoff, terminating safely without
         infinite recursion or stack overflow.
         """
+        # A symlink cycle must terminate (kernel-style 40-hop cutoff), not hang.
         res = self.tree({"/etc/systemd/system/x.service": SVC.format(cmd="/usr/local/bin/loop")}, links=[WANT, ("/usr/local/bin/loop", "/usr/local/bin/loop")])
         self.assertIn("findings", res)
 
@@ -534,6 +558,7 @@ class TestLinuxCore(Base):
         f = {"/etc/systemd/system/x.service": self.u("ExecStart=/usr/local/libexec/twu/run"), "/usr/local/libexec/twu/run": "#!/bin/sh\n"}
         # build the tree first, then add the ACL, then audit (tree() audits immediately, so build manually)
         self.tree(f, links=[WANT], modes={"/usr/local/libexec/twu/run": 0o755})
+        # Needs the setfacl tool and a filesystem with ACL support.
         r = subprocess.run(["setfacl", "-m", "u:65534:rwx", str(self.root / "usr/local/libexec/twu")], capture_output=True, text=True)
         if r.returncode != 0:
             self.skipTest("filesystem has no ACL support: " + r.stderr.strip()[:60])
@@ -688,6 +713,7 @@ class TestUserLaunchers(Base):
         Verifies that standard user launchers executing unprivileged applications (e.g. Steam)
         or commented-out elevation commands are not flagged.
         """
+        # Control case: a launcher that never elevates must stay silent.
         res = self.tree({f"{HU}/.local/bin/plain": "#!/bin/sh\nexec steam steam://rungameid/1\n",
                          f"{HU}/.local/bin/commented": "# pkexec /home/u/x.py\n"}, trusted_uid=os.getuid() + 12345)
         self.assertFalse(self.sev(res, "elevated-launcher"), res["findings"])
@@ -812,6 +838,7 @@ class TestMacOS(Base):
         A malformed or corrupted plist file generates an informative 'info' finding without
         crashing or halting the audit of remaining jobs.
         """
+        # A corrupt plist should be info-level and must not abort later checks.
         res = self.tree({"/Library/LaunchDaemons/bad.plist": "<<<not a plist", "/etc/periodic/daily/500x": "x"},
                         bytes_files={LD: self.plist(ProgramArguments=["/bin/sh", f"{UU}/r.sh"]), "/Library/LaunchDaemons/list.plist": plistlib.dumps(["a"])},
                         modes={"/etc/periodic/daily/500x": 0o666}, links=[])
@@ -857,6 +884,7 @@ class TestMacOS(Base):
         """
         res = self.tree({"/etc/paths.d/x": f"{UU}/bin\n", f"{UU}/bin/f": "x"})
         self.assertTrue([f for f in self.sev(res, "profile", "critical") if f["path"] == f"{UU}/bin"], res["findings"])
+        # On macOS /tmp is a symlink to /private/tmp; resolution must still see the user-writable area.
         res = self.tree({"/private/tmp/r.sh": "x"}, bytes_files={LD: self.plist(ProgramArguments=["/bin/sh", "/tmp/r.sh"])}, links=[("/tmp", "private/tmp")])
         self.assertTrue(self.sev(res, "launchd-daemon", "critical"), res["findings"])
 
@@ -866,6 +894,7 @@ class TestMacOS(Base):
         udev rules must not be audited under Darwin; launchd plists must not be audited under Linux.
         """
         linux_only = {"/etc/udev/rules.d/90-x.rules": f'RUN+="{HU}/s.sh"\n', f"{HU}/s.sh": "x"}
+        # Linux-only artifacts present while auditing as darwin must be ignored.
         res = self.tree(linux_only)
         self.assertFalse(self.sev(res, "udev-rule"), "udev audited on darwin")
         res = self.tree({f"{UU}/r.sh": "x"}, bytes_files={LD: self.plist(ProgramArguments=["/bin/sh", f"{UU}/r.sh"])}, platform="linux")
