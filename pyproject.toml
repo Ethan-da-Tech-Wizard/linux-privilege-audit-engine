@@ -16,6 +16,7 @@
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
+# Core metadata. There is no `dependencies` key: the auditor uses only the standard library, so it can run on a locked-down host.
 [project]
 name = "linux-privilege-audit-engine"
 version = "1.0.0"
@@ -26,6 +27,7 @@ authors = [
   { name = "TWU LLC" }
 ]
 license = { text = "MIT" }
+# Search keywords for package indexes (no effect on behaviour).
 keywords = [
   "security",
   "privilege-escalation",
@@ -37,6 +39,7 @@ keywords = [
   "devsecops",
   "gtfobins"
 ]
+# Trove classifiers: audience, topic, supported Python versions; Linux is the target, macOS is accepted for development.
 classifiers = [
   "Intended Audience :: System Administrators",
   "Intended Audience :: Information Technology",
