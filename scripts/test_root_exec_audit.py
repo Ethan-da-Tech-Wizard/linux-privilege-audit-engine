@@ -2,7 +2,6 @@
 # ==============================================================================
 # Program: test_root_exec_audit.py
 # Programmer: Ethan-da-Tech-Wizard
-# Course: CIS 156 / Advanced Systems
 # Last Modified: November 18, 2026
 # Purpose: Adversarial regression unit test suite and validation harness for
 #          root execution privilege escalation analysis. Constructs hermetic mock

@@ -2,7 +2,6 @@
 # ==============================================================================
 # Program: root_exec_audit.py
 # Programmer: Ethan-da-Tech-Wizard
-# Course: CIS 156 / Advanced Systems
 # Last Modified: November 18, 2026
 # Purpose: Static security analysis and root execution privilege escalation auditor.
 #          Evaluates Linux systemd unit definitions, sudoers specifications,
