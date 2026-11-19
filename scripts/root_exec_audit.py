@@ -423,6 +423,9 @@ class Auditor:
     sudoers privilege rules, dynamic linker configurations, and execution launchers.
     """
 
+    # root is a prefix for every path read, so the audit can run against a mounted disk
+    # image or test fixture tree instead of the live system; is_root overrides the
+    # uid check for tests.
     def __init__(self, root: str = "/", trusted_uid: int = 0, trusted_gid: int = 0, platform: Optional[str] = None, is_root: Optional[bool] = None):
         # Normalise the audit root: '' and '/' both mean the real filesystem.
         self.root = (root or "/").rstrip("/") or "/"
