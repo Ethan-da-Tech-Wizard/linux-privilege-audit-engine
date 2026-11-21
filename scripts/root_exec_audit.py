@@ -14,12 +14,12 @@
 ========================================================================================
 LINUX & MACOS ROOT EXECUTION PRIVILEGE ESCALATION AUDITOR & LEAST-PRIVILEGE SCANNER
 ========================================================================================
-Architecture & Theoretical Principle:
+Idea:
   In modern UNIX and Linux systems, local privilege escalation (LPE) vulnerabilities
   frequently occur not through memory corruption or kernel exploits, but through subtle
   misconfigurations in execution chains executed by UID 0 (root).
 
-  Core Axiom: "Nothing executed or sourced by root may reside in, traverse through,
+  Rule the checks are built around: "Nothing executed or sourced by root may reside in, traverse through,
   or depend upon a filesystem path that an unprivileged user can modify, replace,
   or create."
 
@@ -32,15 +32,23 @@ Architecture & Theoretical Principle:
   - User desktop launchers (.desktop) and scripts elevating via pkexec, sudo, or doas
   - macOS launchd LaunchDaemons, PrivilegedHelperTools, periodic jobs, and paths.d
 
-Zero-Dependency & Fail-Closed Design:
-  - 100% Python Standard Library (no third-party pip dependencies).
-  - Pure read-only operation: performs zero filesystem writes or modifications.
-  - Fail-closed security architecture: missing permissions or malformed entries are
-    flagged or downgraded safely without crashing the audit process.
+Design notes and limits:
+  - Python standard library only (no third-party dependencies).
+  - Read-only: the auditor only stats and reads files; it never writes or changes them.
+  - Unreadable or malformed entries are reported (often as "info") instead of crashing
+    the run. A finding is a lead for a human to check, not proof of exploitability, and
+    a clean report does not prove the system is safe: only the paths listed in this
+    module are inspected, and the check is a point-in-time look at modes and owners.
 
-Author: Ethan Kilmer <ethan@twu.software>
-Organization: TWU LLC
-License: MIT License (2026)
+Audited paths are intentional:
+  The lists of paths in audit_misc_linux() and audit_misc_darwin() (for example
+  /etc/rc.local, /etc/daily.local, /etc/weekly.local, /etc/monthly.local and
+  /etc/periodic.conf.local) are deliberate: root runs or sources those files. They are
+  pinned by tests (see TestMacOS.test_periodic_local_paths_are_audited) so an
+  accidental edit cannot silently shrink what is audited.
+
+Author: Ethan-da-Tech-Wizard (GitHub)
+License: MIT, see LICENSE
 ========================================================================================
 """
 
@@ -67,7 +75,7 @@ SEV = {"critical": 0, "high": 1, "medium": 2, "info": 3}
 
 # Environment variable keys used strictly for test harness sandboxing and isolation.
 # Test-only overrides: they let the unit tests point the auditor at a fake
-# root tree and pretend a non-zero UID/GID is 'root'. Production runs leave
+# root tree and pretend a non-zero UID/GID is 'root'. Normal runs leave
 # them unset so the defaults (/, 0, 0) apply.
 ENV_ROOT, ENV_UID, ENV_GID = "ROOTEXEC_ROOT", "ROOTEXEC_TRUSTED_UID", "ROOTEXEC_TRUSTED_GID"
 
@@ -1126,6 +1134,7 @@ class Auditor:
 
     def audit_misc_linux(self) -> None:
         """Audit Linux shell profile scripts, PAM modules, NetworkManager hooks, polkit, and tuned."""
+        # /etc/rc.local is run as root at boot on systems that still honour it; it is listed on purpose.
         self.check_files("profile", "login", ["/etc/profile", "/etc/profile.d/*", "/etc/bashrc", "/etc/environment", "/etc/rc.local"], "sourced by root login shells")
         self.check_files("nm-dispatcher", "NetworkManager", ["/etc/NetworkManager/dispatcher.d/*", "/etc/NetworkManager/dispatcher.d/*/*"], "run as root on network events")
         self.check_files("kernel-hook", "kernel hook", ["/etc/kernel/postinst.d/*", "/etc/kernel/install.d/*", "/usr/local/lib/kernel/install.d/*",
@@ -1205,6 +1214,10 @@ class Auditor:
 
     def audit_misc_darwin(self) -> None:
         """Audit macOS periodic jobs, system paths (/etc/paths, /etc/paths.d), and login profiles."""
+        # periodic(8) runs these scripts as root every day/week/month. The *.local files and
+        # periodic.conf(.local) are optional hooks that an admin or malware can create, so a
+        # missing file is fine but an existing one must not be writable by a non-root user.
+        # These exact paths are intentional and pinned by a test; do not "tidy" them.
         self.check_files("periodic", "periodic", ["/etc/periodic/*/*", "/usr/local/etc/periodic/*/*", "/etc/daily.local", "/etc/weekly.local", "/etc/monthly.local",
                                                   "/etc/periodic.conf", "/etc/periodic.conf.local"], "run as root by the daily/weekly/monthly periodic jobs")
         self.check_files("profile", "login", ["/etc/profile", "/etc/zshenv", "/etc/zprofile", "/etc/zshrc", "/etc/bashrc", "/etc/paths", "/etc/paths.d/*"],

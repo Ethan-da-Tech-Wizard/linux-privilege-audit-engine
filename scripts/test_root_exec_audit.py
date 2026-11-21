@@ -15,7 +15,7 @@
 ADVERSARIAL UNIT TEST MATRIX & PRIVILEGE ESCALATION VALIDATION HARNESS
 ========================================================================================
 Architecture & Theoretical Testing Principles:
-  This test harness comprehensively evaluates all 12 privilege escalation false-negative
+  This test harness exercises the 12 privilege escalation false-negative
   classes intercepted by scripts/root_exec_audit.py without requiring root privileges or
   touching the host operating system's /etc directory.
 
@@ -31,13 +31,12 @@ Isolation & Determinism Invariants:
   4. Bitwise Permission Verification: Tests explicitly assert against world-writable
      bits (st_mode & 0o002), sticky bit directory protection (0o1000), group-writable
      bits (0o020), and POSIX binary ACL unpacking.
-  5. Zero Host Contamination: Tests verify read-only safety; no files are modified or
-     created outside the temporary test directory.
+  5. Host isolation: tests build their fake trees under a temporary directory and are
+     written to leave the real /etc and /Library alone.
 
 Ownership & Licensing:
-  Author: Ethan Kilmer <ethan@twu.software>
-  Organization: TWU LLC
-  License: MIT License (2026)
+  Author: Ethan-da-Tech-Wizard (GitHub)
+  License: MIT, see LICENSE
 ========================================================================================
 """
 
@@ -163,6 +162,11 @@ class Base(unittest.TestCase):
 
 class TestLinuxCore(Base):
     """Core regression test suite for Linux privilege escalation auditing and systemd parsing."""
+
+    def test_rc_local_is_audited(self):
+        """Pin /etc/rc.local: root sources it at boot, so a world-writable copy is a high 'profile' finding."""
+        res = self.tree({"/etc/rc.local": "#!/bin/sh\n"}, modes={"/etc/rc.local": 0o666}, trusted_uid=os.getuid())
+        self.assertTrue(self.sev(res, "profile", "high"), res["findings"])
 
     def test_clean_tree(self):
         """Baseline Hardening Test: Clean Root Service Configuration.
@@ -740,6 +744,21 @@ class TestMacOS(Base):
     """Regression test suite for macOS launchd LaunchDaemons, periodic jobs, and paths.d."""
     platform = "darwin"
 
+    def test_periodic_local_paths_are_audited(self):
+        """Pin the audited macOS periodic paths so they cannot silently change.
+
+        A past history rewrite damaged these path strings in the auditor and they had to be
+        restored. For every path below, a world-writable copy must be reported as a high
+        "periodic" finding on darwin. If a path is dropped or misspelled in
+        audit_misc_darwin(), this test fails.
+        """
+        pinned = ["/etc/daily.local", "/etc/weekly.local", "/etc/monthly.local",
+                  "/etc/periodic.conf", "/etc/periodic.conf.local",
+                  "/etc/periodic/daily/500x", "/usr/local/etc/periodic/weekly/x"]
+        for path in pinned:
+            res = self.tree({path: "#!/bin/sh\n"}, modes={path: 0o666}, trusted_uid=os.getuid())
+            self.assertTrue(self.sev(res, "periodic", "high"), f"{path} is no longer audited: {res['findings']}")
+
     @staticmethod
     def plist(**kw):
         """Generate XML plist byte string for launchd LaunchDaemon specification."""
@@ -951,7 +970,7 @@ class TestCli(Base):
         self.assertEqual(r.returncode, 2, r.stdout)
 
     def test_environment_is_ignored_without_the_test_overrides_and_nothing_is_written(self):
-        """Zero-Write Security Guarantee: Read-Only Operation.
+        """Read-Only Operation (no writes).
         
         Validates that running the CLI writes zero files to the working directory.
         """
