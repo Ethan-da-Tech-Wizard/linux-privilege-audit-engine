@@ -1238,8 +1238,8 @@ class Auditor:
 
     def audit_misc_darwin(self) -> None:
         """Audit macOS periodic jobs, system paths (/etc/paths, /etc/paths.d), and login profiles."""
-        self.check_files("periodic", "periodic", ["/etc/periodic/*/*", "/usr/local/etc/periodic/*/*", "/etc/host.example", "/etc/host.example", "/etc/host.example",
-                                                  "/etc/periodic.conf", "/etc/periodic.host.example"], "run as root by the daily/weekly/monthly periodic jobs")
+        self.check_files("periodic", "periodic", ["/etc/periodic/*/*", "/usr/local/etc/periodic/*/*", "/etc/daily.local", "/etc/weekly.local", "/etc/monthly.local",
+                                                  "/etc/periodic.conf", "/etc/periodic.conf.local"], "run as root by the daily/weekly/monthly periodic jobs")
         self.check_files("profile", "login", ["/etc/profile", "/etc/zshenv", "/etc/zprofile", "/etc/zshrc", "/etc/bashrc", "/etc/paths", "/etc/paths.d/*"],
                          "sourced or read by root login shells")
         for f in ["/etc/paths"] + self.glob("/etc/paths.d/*"):
