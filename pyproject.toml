@@ -1,14 +1,9 @@
 # ==============================================================================
-# Linux Privilege Escalation Auditor Engine — Build & Packaging Specification
+# linux-privilege-audit-engine: build and packaging metadata
 # ==============================================================================
-# Architecture & Governance:
-#   Package specification for the deterministic zero-dependency root execution
-#   privilege auditor and least-privilege compliance scanner.
-#
-# Ownership & Licensing:
-#   Author: Ethan Kilmer <ethan@twu.software>
-#   Organization: TWU LLC
-#   License: MIT License (2026)
+# Packaging for a read-only checker that reports files root runs or sources and that a
+# non-root user could modify. Standard library only. Findings are leads, not proof.
+# Author: Ethan-da-Tech-Wizard (GitHub). License: MIT, see LICENSE.
 # ==============================================================================
 
 # Build backend: plain setuptools; the project has no runtime dependencies.
@@ -20,11 +15,10 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "linux-privilege-audit-engine"
 version = "1.0.0"
-description = "Python project for auditing potentially unsafe privileged execution paths."
+description = "Read-only checker for files that root runs or sources and a non-root user could modify."
 readme = "README.md"
 authors = [
-  { name = "Ethan Kilmer", email = "ethan@twu.software" },
-  { name = "TWU LLC" }
+  { name = "Ethan-da-Tech-Wizard" }
 ]
 license = { text = "MIT" }
 # Search keywords for package indexes (no effect on behaviour).
@@ -36,7 +30,6 @@ keywords = [
   "audit",
   "linux-security",
   "least-privilege",
-  "devsecops",
   "gtfobins"
 ]
 # Trove classifiers: audience, topic, supported Python versions; Linux is the target, macOS is accepted for development.
@@ -47,6 +40,7 @@ classifiers = [
   "Operating System :: POSIX :: Linux",
   "Operating System :: MacOS :: MacOS X",
   "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
@@ -54,8 +48,8 @@ classifiers = [
   "Topic :: Security",
   "Topic :: System :: Systems Administration"
 ]
-# Matches the CI matrix (3.10 through 3.13).
-requires-python = ">=3.10"
+# CI runs 3.9 and 3.13; the unit tests also pass on 3.9 locally.
+requires-python = ">=3.9"
 
 # Installs a 'privilege-audit' command that calls scripts.root_exec_audit.main().
 [project.scripts]

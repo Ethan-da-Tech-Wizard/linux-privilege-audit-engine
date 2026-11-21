@@ -1,0 +1,16 @@
+name: Correction or overclaim
+description: A README or comment says something the code or tests do not support.
+labels: [documentation]
+body:
+  - type: textarea
+    id: claim
+    attributes:
+      label: The claim, with file and line
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Why it is wrong or unsupported
+    validations:
+      required: true

@@ -1,0 +1,37 @@
+# What this workflow checks: the repository's own unit tests (scripts/test_root_exec_audit.py) on Ubuntu and
+# macOS with Python 3.9 and 3.13, plus a smoke run of the CLI that checks the JSON output has the expected
+# schema tag. It does not prove the auditor finds every real problem, and the smoke run only checks that the
+# tool starts, reads the runner's own filesystem and prints valid JSON.
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+# The workflow only reads the repository.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: py${{ matrix.python }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest]
+        python: ["3.9", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Byte-compile
+        run: python -B -m py_compile scripts/root_exec_audit.py scripts/test_root_exec_audit.py
+      - name: Unit tests
+        run: python -B -m unittest -v scripts/test_root_exec_audit.py
+      - name: Smoke run (real filesystem of the runner; findings are expected and do not fail the job)
+        run: |
+          python -B scripts/root_exec_audit.py --json > audit_out.json || test $? -eq 1
+          python -c "import json; d = json.load(open('audit_out.json')); assert d['schema'] == 'twu.root-exec-audit.v1'; print('findings:', len(d['findings']))"
