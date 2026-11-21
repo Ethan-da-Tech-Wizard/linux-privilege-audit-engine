@@ -285,7 +285,13 @@ class TestLinuxCore(Base):
         controlled team administration without false alarms.
         """
         f = {"/etc/systemd/system/x.service": SVC.format(cmd="/usr/local/libexec/twu/run"), "/usr/local/libexec/twu/run": "#!/bin/sh\n"}
-        res = self.tree(f, links=[WANT], modes={"/usr/local/libexec/twu/run": 0o664}, trusted_gid=os.getgid())
+        # Use the gid the filesystem actually gives new files here. It is not always os.getgid():
+        # BSD/macOS give a new file its parent directory's group, so a temp dir owned by gid 0
+        # produced files with gid 0 while os.getgid() was 20, and this test failed on macOS.
+        # Linux gives the process's group unless the directory is setgid; the probe covers both.
+        probe = self.base / "gid-probe"
+        probe.write_text("")
+        res = self.tree(f, links=[WANT], modes={"/usr/local/libexec/twu/run": 0o664}, trusted_gid=probe.stat().st_gid)
         self.assertFalse(self.sev(res, "systemd-unit"), res["findings"])
 
     def test_unit_file_itself_and_symlinked_unit_are_checked(self):
