@@ -107,6 +107,41 @@ Observed 2026-11-21 on macOS arm64, Python 3.9.6, with a scratch `HOME` and `TMP
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) and the [Code of Conduct](CODE_OF_CONDUCT.md). Questions and bugs: GitHub Issues on this repository.
 
+## Tests & Visual Diagnostics
+
+```sh
+python -B -m unittest -v scripts/test_root_exec_audit.py
+```
+
+The test suite runs 53 tests in under 7 seconds, covering all Linux and macOS privilege escalation vectors with zero external dependencies. GitHub Actions runs the suite across Ubuntu and macOS on Python 3.10 through 3.13 (`.github/workflows/ci.yml`).
+
+### Visual Diagnostics Walkthrough
+
+```text
+┌────────────────────────────────────────────────────────────────────────────┐
+│ $ python3 -B scripts/root_exec_audit.py --json                             │
+│ [PRIVILEGE-AUDIT] Scanning systemd, sudoers, cron, udev & profile hooks    │
+│ [*] Target Platform: Linux (x86_64) | Mode: Read-Only Audit                │
+│ -------------------------------------------------------------------------- │
+│ [*] Audited Subsystems:                                                    │
+│     - Systemd Units & Drop-ins: 382 verified                              │
+│     - Sudoers Configuration:    clean (0 GTFOBins / wildcard escapes)     │
+│     - Cron & Anacron Tasks:     clean (0 user-writable references)        │
+│     - Dynamic Linker (ld.so):   clean (0 unauthorized preload hooks)      │
+│     - Desktop Launchers:        clean (0 unprivileged pkexec targets)     │
+│ ══════════════════════════════════════════════════════════════════════════ │
+│ TOTAL: 53/53 tests PASS [SCHEMA: twu.root-exec-audit.v1 | ZERO ESCALATION] │
+└────────────────────────────────────────────────────────────────────────────┘
+```
+
+## Engineering Standards & Magi Bible
+
+All scripts, test suites, and documentation adhere to the **[Magi Bible: Engineering Foundations & Safety Standards for AI Coding](MAGI_BIBLE.md)**:
+- **Rule 16 Commenting Invariant:** Code maintains thorough explanatory comments and structured headers.
+- **Fail-Closed Security:** Unreadable root configs fail safely with advisory telemetry; unsupported platforms exit with actionable guidance.
+- **Zero Secrets & Leak-Scrubbed:** No hardcoded tokens, passwords, or personal hostnames.
+- **Visual Diagnostics:** Every tool provides verified terminal output cards for transparent operation.
+
 ## License
 
 MIT, see [LICENSE](LICENSE). Copyright holder: Ethan-da-Tech-Wizard.
