@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 354" width="860" height="354">
+  <defs>
+    <style>
+      .terminal-bg { fill: #181825; }
+      .terminal-header { fill: #11111b; }
+      .terminal-title { fill: #a6adc8; font-family: monospace, monospace; font-size: 13px; font-weight: bold; text-anchor: middle; }
+      .terminal-text { fill: #cdd6f4; font-family: monospace, monospace; font-size: 13px; }
+      .btn-red { fill: #f38ba8; }
+      .btn-yellow { fill: #f9e2af; }
+      .btn-green { fill: #a6e3a1; }
+    </style>
+  </defs>
+  <rect class="terminal-bg" x="0" y="0" width="860" height="354" rx="10" ry="10" />
+  <path class="terminal-header" d="M 0 10 A 10 10 0 0 1 10 0 L 850 0 A 10 10 0 0 1 860 10 L 860 42 L 0 42 Z" />
+  <circle class="btn-red" cx="24" cy="21" r="6" />
+  <circle class="btn-yellow" cx="42" cy="21" r="6" />
+  <circle class="btn-green" cx="60" cy="21" r="6" />
+  <text class="terminal-title" x="430" y="26">root_exec_audit: Systemd &amp; Binary Privilege Sweep</text>
+  <g class="terminal-text">
+    <text x="24" y="80">$ python3 scripts/root_exec_audit.py --platform linux</text>
+    <text x="24" y="102">[CRITICAL] systemd-unit     unit backup.service: /usr/local/bin/nightly_backup.sh</text>
+    <text x="24" y="124">             ExecStart runs it as root: /usr/local/bin/nightly_backup.sh is world-writable (0o777)</text>
+    <text x="24" y="146">[HIGH    ] systemd-dropin   drop-in /etc/systemd/system/app.service.d/override.conf</text>
+    <text x="24" y="168">             systemd reads this unit file/drop-in as root: parent directory is group-writable (gid 1000)</text>
+    <text x="24" y="190">[HIGH    ] local-bin        /usr/local run: /usr/local/sbin/health_check</text>
+    <text x="24" y="212">             in root PATH or root-run location: symlink target resolves to /tmp/scratch/health_check (untrusted)</text>
+    <text x="24" y="234">[INFO    ] sudoers          sudoers: /etc/sudoers*</text>
+    <text x="24" y="256">             not readable as unprivileged user: run with sudo or elevated runner for NOPASSWD audit</text>
+    <text x="24" y="278"></text>
+    <text x="24" y="300">root_exec_audit (linux): 2 blocking finding(s) (high or worse), 3 total</text>
+    <text x="24" y="322">Verdict: 1 (Blocking findings detected - remediation required)</text>
+  </g>
+</svg>

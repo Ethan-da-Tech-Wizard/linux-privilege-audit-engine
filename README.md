@@ -134,9 +134,19 @@ The test suite runs 53 tests in under 7 seconds, covering all Linux and macOS pr
 └────────────────────────────────────────────────────────────────────────────┘
 ```
 
+#### Vector Walkthrough Previews
+
+##### 1. Systemd Unit & Drop-in Privilege Scan
+![Systemd Privilege Sweep](docs/assets/root_exec_audit_systemd_scan.svg)
+
+##### 2. Sudoers, Cron & Kernel Hook Verification
+![Sudoers and Cron Verification](docs/assets/root_exec_audit_sudoers_cron.svg)
+
 ## Engineering Standards & Magi Bible
 
-All scripts, test suites, and documentation adhere to the **[Magi Bible: Engineering Foundations & Safety Standards for AI Coding](MAGI_BIBLE.md)**:
+All scripts, test suites, and documentation adhere to the **[Magi Bible: Engineering Foundations & Safety Standards for AI Coding](MAGI_BIBLE.md)** and the contributor onboarding protocol in **[MAGI_LOOK_HERE.md](MAGI_LOOK_HERE.md)**:
+- **[MAGI_LOOK_HERE.md](MAGI_LOOK_HERE.md):** Contributor & autonomous agent operational rules, code of conduct, and verification criteria.
+- **[MAGI_BIBLE.md](MAGI_BIBLE.md):** The Universal Magi Bible establishing Rule 16 commentary ($\ge 25\%$), visual walkthrough previews, fail-closed boundaries, and standard library reliance.
 - **Rule 16 Commenting Invariant:** Code maintains thorough explanatory comments and structured headers.
 - **Fail-Closed Security:** Unreadable root configs fail safely with advisory telemetry; unsupported platforms exit with actionable guidance.
 - **Zero Secrets & Leak-Scrubbed:** No hardcoded tokens, passwords, or personal hostnames.
